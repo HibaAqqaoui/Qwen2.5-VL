@@ -609,14 +609,32 @@ class PackedDataCollatorForSupervisedDataset(object):
         return batch
 
 
+# def make_supervised_data_module_packed(
+#     tokenizer: transformers.PreTrainedTokenizer, data_args
+# ) -> Dict:
+#     """Make dataset and collator for supervised fine-tuning."""
+#     train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_args=data_args)
+#     data_collator = PackedDataCollatorForSupervisedDataset(tokenizer=tokenizer)
+#     return dict(
+#         train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator
+#     )
+
 def make_supervised_data_module_packed(
     tokenizer: transformers.PreTrainedTokenizer, data_args
 ) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_args=data_args)
+    full_dataset = LazySupervisedDataset(tokenizer=tokenizer, data_args=data_args)
+    # Split dataset (e.g., 90% train, 10% eval)
+    train_size = int(0.9 * len(full_dataset))
+    eval_size = len(full_dataset) - train_size
+    train_dataset, eval_dataset = torch.utils.data.random_split(
+        full_dataset, [train_size, eval_size]
+    )
     data_collator = PackedDataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(
-        train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator
+        train_dataset=train_dataset, 
+        eval_dataset=eval_dataset, 
+        data_collator=data_collator
     )
 
 
