@@ -22,6 +22,7 @@ import transformers
 import json
 from typing import Dict
 import shutil
+import numpy as np
 import sys
 from pathlib import Path
 
@@ -77,6 +78,22 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
         del state_dict
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
 
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    
+    # Get predicted classes if logits
+    if predictions.ndim > 1:
+        predictions = np.argmax(predictions, axis=-1)
+    
+    # Remove padding tokens (-100)
+    mask = labels != -100
+    predictions = predictions[mask]
+    labels = labels[mask]
+    
+    # Calculate accuracy
+    accuracy = (predictions == labels).mean()
+    
+    return {"accuracy": accuracy}
 
 def set_model(model_args, model):
     if model_args.tune_mm_vision:
@@ -169,7 +186,7 @@ def train(attn_implementation="flash_attention_2"):
     else:
         data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
     trainer = Trainer(
-        model=model, processing_class=tokenizer, args=training_args, **data_module
+        model=model, processing_class=tokenizer, args=training_args, compute_metrics=compute_metrics, **data_module
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
