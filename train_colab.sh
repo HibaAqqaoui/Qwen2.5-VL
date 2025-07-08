@@ -72,12 +72,14 @@ if [ "$NPROC_PER_NODE" -eq 1 ]; then
         --remove_unused_columns False \
         --report_to "none" \
         --do_eval True \
-        --evaluation_strategy epochs \
+        --eval_strategy "epoch" \
         --per_device_eval_batch_size 1 \
         --metric_for_best_model "eval_loss" \
         --load_best_model_at_end True \
         --greater_is_better False \
-        
+        --save_strategy "epoch" \
+        --output_dir "./results" \
+    
 else
     # Multi-GPU with torchrun
     echo "Starting multi-GPU training..."
