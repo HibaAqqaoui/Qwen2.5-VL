@@ -81,17 +81,49 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
     
-    # Get predicted classes if logits
-    if predictions.ndim > 1:
+    print(f"Raw predictions shape: {predictions.shape}")
+    print(f"Raw labels shape: {labels.shape}")
+    print(f"Predictions dtype: {predictions.dtype}")
+    print(f"Labels dtype: {labels.dtype}")
+    
+    # Check for different prediction formats
+    if predictions.ndim > 2:
+        print("Multi-dimensional predictions - taking argmax on last axis")
+        predictions = np.argmax(predictions, axis=-1)
+    elif predictions.ndim == 2:
+        print("2D predictions - taking argmax on last axis")
         predictions = np.argmax(predictions, axis=-1)
     
-    # Remove padding tokens (-100)
+    print(f"Predictions after argmax shape: {predictions.shape}")
+    print(f"Sample predictions: {predictions.flatten()[:20]}")
+    print(f"Sample labels: {labels.flatten()[:20]}")
+    
+    # Check for padding tokens
     mask = labels != -100
-    predictions = predictions[mask]
-    labels = labels[mask]
+    print(f"Total elements: {len(labels.flatten())}")
+    print(f"Valid elements (not -100): {mask.sum()}")
+    print(f"Percentage of valid elements: {mask.sum() / len(labels.flatten()) * 100:.2f}%")
+    
+    # Apply mask
+    predictions_filtered = predictions[mask]
+    labels_filtered = labels[mask]
+    
+    print(f"Filtered predictions shape: {predictions_filtered.shape}")
+    print(f"Filtered labels shape: {labels_filtered.shape}")
+    print(f"Unique prediction values: {np.unique(predictions_filtered)}")
+    print(f"Unique label values: {np.unique(labels_filtered)}")
     
     # Calculate accuracy
-    accuracy = (predictions == labels).mean()
+    if len(predictions_filtered) > 0:
+        accuracy = (predictions_filtered == labels_filtered).mean()
+        print(f"Matches: {(predictions_filtered == labels_filtered).sum()}")
+        print(f"Total valid samples: {len(predictions_filtered)}")
+    else:
+        accuracy = 0.0
+        print("No valid samples found!")
+    
+    print(f"Final accuracy: {accuracy}")
+    print("-" * 50)
     
     return {"accuracy": accuracy}
 
