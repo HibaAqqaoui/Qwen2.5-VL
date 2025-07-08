@@ -55,12 +55,12 @@ if [ "$NPROC_PER_NODE" -eq 1 ]; then
         --cache_dir "$CACHE_DIR" \
         --tune_mm_llm False \
         --tune_mm_vision True \
-        --tune_mm_mlp False \
+        --tune_mm_mlp True \
         --bf16 \
         --per_device_train_batch_size 1 \
         --gradient_accumulation_steps 8 \
-        --learning_rate 2e-7 \
-        --model_max_length 2048 \
+        --learning_rate 8e-6 \
+        --model_max_length 1024 \
         --num_train_epochs 1 \
         --warmup_ratio 0.03 \
         --lr_scheduler_type "cosine" \
@@ -70,8 +70,13 @@ if [ "$NPROC_PER_NODE" -eq 1 ]; then
         --save_total_limit 2 \
         --dataloader_num_workers 0 \
         --remove_unused_columns False \
-        --report_to "none"
+        --report_to "none" \
         --do_eval True \
+        --evaluation_strategy epochs \
+        --per_device_eval_batch_size 1 \
+        --metric_for_best_model "eval_loss" \
+        --load_best_model_at_end True \
+        --greater_is_better False \
         
 else
     # Multi-GPU with torchrun
