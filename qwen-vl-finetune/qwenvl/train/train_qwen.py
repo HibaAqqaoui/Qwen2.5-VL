@@ -46,6 +46,17 @@ from transformers import AutoTokenizer, AutoProcessor, Qwen2VLImageProcessor, Tr
 
 local_rank = None
 
+def get_rank():
+    """Get the rank of the current process safely."""
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_rank()
+    return 0
+
+def is_main_process():
+    """Check if this is the main process."""
+    return get_rank() == 0
+
+
 
 def rank0_print(*args):
     if local_rank == 0:
@@ -149,7 +160,7 @@ def train(attn_implementation="flash_attention_2"):
     )
     set_model(model_args, model)
 
-    if torch.distributed.get_rank() == 0:
+    if is_main_process():
         model.visual.print_trainable_parameters()
         model.model.print_trainable_parameters()
     
