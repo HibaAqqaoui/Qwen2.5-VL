@@ -34,7 +34,7 @@ fi
 # ======================
 # All paths should be in /content or /tmp for persistence
 MODEL_PATH="Qwen/Qwen2.5-VL-3B-Instruct"    # Adjust to your model location
-DATASET_NAME="checks%10"                  # Replace with your actual dataset
+DATASET_NAME="checks%100"                  # Replace with your actual dataset
 OUTPUT_DIR="/content/checkpoints"                # Colab persistent storage
 CACHE_DIR="/tmp/cache"                           # Use /tmp for cache (faster)
 

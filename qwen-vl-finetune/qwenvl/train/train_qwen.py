@@ -258,7 +258,7 @@ def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir, tra
         
         # Show some examples
         print(f"\nFirst 3 Sample Results:")
-        for i, sample in enumerate(detailed_results['samples'][:3]):
+        for i, sample in enumerate(detailed_results['samples'][:50]):
             print(f"  Sample {i+1} (ID: {sample['sample_id']}):")
             print(f"    Accuracy: {sample['accuracy']:.4f}")
             print(f"    Predicted: {sample['predicted_text'][:100]}...")
