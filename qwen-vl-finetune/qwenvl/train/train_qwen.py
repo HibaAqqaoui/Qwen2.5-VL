@@ -57,12 +57,9 @@ def is_main_process():
     """Check if this is the main process."""
     return get_rank() == 0
 
-
-
 def rank0_print(*args):
     if local_rank == 0:
         print(*args)
-
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
@@ -127,6 +124,146 @@ def compute_metrics(eval_pred):
     
     return {"accuracy": accuracy}
 
+def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir):
+    """Run inference on evaluation dataset and save detailed results."""
+    
+    print("Starting post-training inference on evaluation dataset...")
+    
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Get the evaluation dataset
+    eval_dataset = data_module.get('eval_dataset')
+    if eval_dataset is None:
+        print("No evaluation dataset found. Skipping inference.")
+        return
+    
+    # Create a temporary trainer for inference
+    temp_trainer = Trainer(
+        model=model,
+        processing_class=tokenizer,
+        eval_dataset=eval_dataset,
+        compute_metrics=compute_metrics,
+    )
+    
+    # Run evaluation/inference
+    print("Running inference...")
+    eval_results = temp_trainer.evaluate()
+    
+    # Get predictions for detailed analysis
+    predictions = temp_trainer.predict(eval_dataset)
+    
+    # Process predictions similar to compute_metrics
+    raw_predictions = predictions.predictions
+    labels = predictions.label_ids
+    
+    # Convert predictions to token IDs
+    if raw_predictions.ndim > 2:
+        pred_tokens = np.argmax(raw_predictions, axis=-1)
+    elif raw_predictions.ndim == 2:
+        pred_tokens = np.argmax(raw_predictions, axis=-1)
+    else:
+        pred_tokens = raw_predictions
+    
+    # Create mask for valid tokens (not padding)
+    mask = labels != -100
+    
+    # Prepare detailed results
+    detailed_results = {
+        'overall_accuracy': eval_results.get('eval_accuracy', 0.0),
+        'total_samples': len(eval_dataset),
+        'total_tokens': len(labels.flatten()),
+        'valid_tokens': mask.sum().item(),
+        'samples': []
+    }
+    
+    print(f"Processing {len(eval_dataset)} samples for detailed analysis...")
+    
+    # Process each sample
+    for i in range(len(eval_dataset)):
+        sample = eval_dataset[i]
+        
+        # Get predictions and labels for this sample
+        sample_pred_tokens = pred_tokens[i] if i < len(pred_tokens) else None
+        sample_labels = labels[i] if i < len(labels) else None
+        sample_mask = mask[i] if i < len(mask) else None
+        
+        if sample_pred_tokens is not None and sample_labels is not None:
+            # Filter valid tokens
+            valid_preds = sample_pred_tokens[sample_mask]
+            valid_labels = sample_labels[sample_mask]
+            
+            # Calculate sample accuracy
+            if len(valid_preds) > 0:
+                sample_accuracy = (valid_preds == valid_labels).mean()
+            else:
+                sample_accuracy = 0.0
+            
+            # Decode predictions and labels to text
+            try:
+                pred_text = tokenizer.decode(valid_preds, skip_special_tokens=True)
+                label_text = tokenizer.decode(valid_labels, skip_special_tokens=True)
+            except:
+                pred_text = "Error decoding prediction"
+                label_text = "Error decoding label"
+            
+            sample_result = {
+                'sample_id': i,
+                'accuracy': float(sample_accuracy),
+                'valid_tokens': len(valid_preds),
+                'predicted_text': pred_text,
+                'target_text': label_text,
+                'predicted_tokens': valid_preds.tolist(),
+                'target_tokens': valid_labels.tolist(),
+            }
+            
+            # Add input information if available
+            if 'input_ids' in sample:
+                try:
+                    input_text = tokenizer.decode(sample['input_ids'], skip_special_tokens=True)
+                    sample_result['input_text'] = input_text
+                except:
+                    sample_result['input_text'] = "Error decoding input"
+            
+            detailed_results['samples'].append(sample_result)
+    
+    # Save detailed results
+    results_file = os.path.join(output_dir, 'detailed_inference_results.json')
+    with open(results_file, 'w', encoding='utf-8') as f:
+        json.dump(detailed_results, f, indent=2, ensure_ascii=False)
+    
+    # Print summary
+    print(f"\n{'='*60}")
+    print("INFERENCE RESULTS SUMMARY")
+    print(f"{'='*60}")
+    print(f"Overall Accuracy: {detailed_results['overall_accuracy']:.4f}")
+    print(f"Total Samples: {detailed_results['total_samples']}")
+    print(f"Total Tokens: {detailed_results['total_tokens']}")
+    print(f"Valid Tokens: {detailed_results['valid_tokens']}")
+    print(f"Results saved to: {results_file}")
+    
+    # Print sample-by-sample accuracy distribution
+    if detailed_results['samples']:
+        sample_accuracies = [s['accuracy'] for s in detailed_results['samples']]
+        print(f"\nSample Accuracy Distribution:")
+        print(f"  Mean: {np.mean(sample_accuracies):.4f}")
+        print(f"  Std:  {np.std(sample_accuracies):.4f}")
+        print(f"  Min:  {np.min(sample_accuracies):.4f}")
+        print(f"  Max:  {np.max(sample_accuracies):.4f}")
+        
+        # Show some examples
+        print(f"\nFirst 3 Sample Results:")
+        for i, sample in enumerate(detailed_results['samples'][:3]):
+            print(f"  Sample {i+1} (ID: {sample['sample_id']}):")
+            print(f"    Accuracy: {sample['accuracy']:.4f}")
+            print(f"    Predicted: {sample['predicted_text'][:100]}...")
+            print(f"    Target:    {sample['target_text'][:100]}...")
+            print()
+    
+    print(f"{'='*60}")
+    
+    return detailed_results
+
 def set_model(model_args, model):
     if model_args.tune_mm_vision:
         for n, p in model.visual.named_parameters():
@@ -150,7 +287,6 @@ def set_model(model_args, model):
         for n, p in model.model.named_parameters():
             p.requires_grad = False
         model.lm_head.requires_grad = False
-
 
 def train(attn_implementation="flash_attention_2"):
     global local_rank
@@ -217,6 +353,7 @@ def train(attn_implementation="flash_attention_2"):
         data_module = make_supervised_data_module_packed(tokenizer=tokenizer, data_args=data_args)
     else:
         data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+    
     trainer = Trainer(
         model=model, processing_class=tokenizer, args=training_args, compute_metrics=compute_metrics, **data_module
     )
@@ -226,13 +363,29 @@ def train(attn_implementation="flash_attention_2"):
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
+    
     trainer.save_state()
     data_args.image_processor.save_pretrained(training_args.output_dir)
 
     model.config.use_cache = True
 
     safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-
+    
+    # Run inference on evaluation dataset after training
+    if is_main_process():
+        print("\n" + "="*60)
+        print("STARTING POST-TRAINING INFERENCE")
+        print("="*60)
+        
+        inference_results = run_inference_on_eval_dataset(
+            model=model, 
+            tokenizer=tokenizer, 
+            data_module=data_module,
+            output_dir=training_args.output_dir
+        )
+        
+        print("Post-training inference completed!")
+        print("="*60)
 
 if __name__ == "__main__":
     train(attn_implementation="flash_attention_2")
