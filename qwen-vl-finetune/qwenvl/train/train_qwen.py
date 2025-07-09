@@ -138,99 +138,120 @@ def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir, tra
         print("No evaluation dataset found. Skipping inference.")
         return
     
-    # Get the data collator from the data_module
-    data_collator = data_module.get('data_collator')
+    # Clear GPU cache before inference
+    torch.cuda.empty_cache()
     
-    # Create a temporary trainer for inference with proper configuration
-    temp_trainer = Trainer(
-        model=model,
-        processing_class=tokenizer,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator,
-        compute_metrics=compute_metrics,
-        args=training_args,  # Use the same training arguments for consistency
-    )
+    print("Using memory-efficient individual sample inference...")
     
-    # Run evaluation/inference
-    print("Running inference...")
-    eval_results = temp_trainer.evaluate()
+    # Process samples individually to avoid memory issues
+    all_predictions = []
+    all_labels = []
+    sample_results = []
     
-    # Get predictions for detailed analysis
-    predictions = temp_trainer.predict(eval_dataset)
+    total_correct = 0
+    total_valid_tokens = 0
     
-    # Process predictions similar to compute_metrics
-    raw_predictions = predictions.predictions
-    labels = predictions.label_ids
+    with torch.no_grad():
+        for i, sample in enumerate(eval_dataset):
+            try:
+                # Clear cache periodically
+                if i % 10 == 0:
+                    torch.cuda.empty_cache()
+                
+                # Prepare inputs
+                inputs = {}
+                for key, value in sample.items():
+                    if key != 'labels':
+                        if isinstance(value, torch.Tensor):
+                            inputs[key] = value.unsqueeze(0).to(model.device)
+                        elif isinstance(value, (list, np.ndarray)):
+                            inputs[key] = torch.tensor(value).unsqueeze(0).to(model.device)
+                        else:
+                            inputs[key] = torch.tensor([value]).to(model.device)
+                
+                # Get model outputs
+                outputs = model(**inputs)
+                logits = outputs.logits
+                
+                # Get predictions
+                pred_tokens = torch.argmax(logits, dim=-1).squeeze(0).cpu().numpy()
+                
+                # Get labels
+                if 'labels' in sample:
+                    labels_tensor = sample['labels']
+                    if isinstance(labels_tensor, torch.Tensor):
+                        labels_array = labels_tensor.cpu().numpy()
+                    else:
+                        labels_array = np.array(labels_tensor)
+                    
+                    # Calculate accuracy for this sample
+                    mask = labels_array != -100
+                    if mask.sum() > 0:
+                        sample_correct = (pred_tokens[mask] == labels_array[mask]).sum()
+                        sample_valid = mask.sum()
+                        sample_accuracy = sample_correct / sample_valid
+                        
+                        total_correct += sample_correct
+                        total_valid_tokens += sample_valid
+                    else:
+                        sample_accuracy = 0.0
+                        sample_valid = 0
+                    
+                    # Decode predictions and labels to text
+                    try:
+                        pred_text = tokenizer.decode(pred_tokens[mask], skip_special_tokens=True)
+                        label_text = tokenizer.decode(labels_array[mask], skip_special_tokens=True)
+                    except:
+                        pred_text = "Error decoding prediction"
+                        label_text = "Error decoding label"
+                    
+                    # Store sample result
+                    sample_result = {
+                        'sample_id': i,
+                        'accuracy': float(sample_accuracy),
+                        'valid_tokens': int(sample_valid),
+                        'predicted_text': pred_text,
+                        'target_text': label_text,
+                        'predicted_tokens': pred_tokens[mask].tolist() if mask.sum() > 0 else [],
+                        'target_tokens': labels_array[mask].tolist() if mask.sum() > 0 else [],
+                    }
+                    
+                    # Add input information if available
+                    if 'input_ids' in sample:
+                        try:
+                            input_ids = sample['input_ids']
+                            if isinstance(input_ids, torch.Tensor):
+                                input_ids = input_ids.cpu().numpy()
+                            input_text = tokenizer.decode(input_ids, skip_special_tokens=True)
+                            sample_result['input_text'] = input_text
+                        except:
+                            sample_result['input_text'] = "Error decoding input"
+                    
+                    sample_results.append(sample_result)
+                
+                if i % 10 == 0:
+                    print(f"Processed {i+1}/{len(eval_dataset)} samples")
+                    
+            except Exception as sample_error:
+                print(f"Error processing sample {i}: {sample_error}")
+                continue
     
-    # Convert predictions to token IDs
-    if raw_predictions.ndim > 2:
-        pred_tokens = np.argmax(raw_predictions, axis=-1)
-    elif raw_predictions.ndim == 2:
-        pred_tokens = np.argmax(raw_predictions, axis=-1)
+    # Calculate overall accuracy
+    if total_valid_tokens > 0:
+        overall_accuracy = total_correct / total_valid_tokens
     else:
-        pred_tokens = raw_predictions
+        overall_accuracy = 0.0
     
-    # Create mask for valid tokens (not padding)
-    mask = labels != -100
+    eval_results = {'eval_accuracy': overall_accuracy}
     
     # Prepare detailed results
     detailed_results = {
         'overall_accuracy': eval_results.get('eval_accuracy', 0.0),
         'total_samples': len(eval_dataset),
-        'total_tokens': len(labels.flatten()),
-        'valid_tokens': mask.sum().item(),
-        'samples': []
+        'total_valid_tokens': int(total_valid_tokens),
+        'total_correct_tokens': int(total_correct),
+        'samples': sample_results
     }
-    
-    print(f"Processing {len(eval_dataset)} samples for detailed analysis...")
-    
-    # Process each sample
-    for i in range(len(eval_dataset)):
-        sample = eval_dataset[i]
-        
-        # Get predictions and labels for this sample
-        sample_pred_tokens = pred_tokens[i] if i < len(pred_tokens) else None
-        sample_labels = labels[i] if i < len(labels) else None
-        sample_mask = mask[i] if i < len(mask) else None
-        
-        if sample_pred_tokens is not None and sample_labels is not None:
-            # Filter valid tokens
-            valid_preds = sample_pred_tokens[sample_mask]
-            valid_labels = sample_labels[sample_mask]
-            
-            # Calculate sample accuracy
-            if len(valid_preds) > 0:
-                sample_accuracy = (valid_preds == valid_labels).mean()
-            else:
-                sample_accuracy = 0.0
-            
-            # Decode predictions and labels to text
-            try:
-                pred_text = tokenizer.decode(valid_preds, skip_special_tokens=True)
-                label_text = tokenizer.decode(valid_labels, skip_special_tokens=True)
-            except:
-                pred_text = "Error decoding prediction"
-                label_text = "Error decoding label"
-            
-            sample_result = {
-                'sample_id': i,
-                'accuracy': float(sample_accuracy),
-                'valid_tokens': len(valid_preds),
-                'predicted_text': pred_text,
-                'target_text': label_text,
-                'predicted_tokens': valid_preds.tolist(),
-                'target_tokens': valid_labels.tolist(),
-            }
-            
-            # Add input information if available
-            if 'input_ids' in sample:
-                try:
-                    input_text = tokenizer.decode(sample['input_ids'], skip_special_tokens=True)
-                    sample_result['input_text'] = input_text
-                except:
-                    sample_result['input_text'] = "Error decoding input"
-            
-            detailed_results['samples'].append(sample_result)
     
     # Save detailed results
     results_file = os.path.join(output_dir, 'detailed_inference_results.json')
@@ -243,13 +264,13 @@ def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir, tra
     print(f"{'='*60}")
     print(f"Overall Accuracy: {detailed_results['overall_accuracy']:.4f}")
     print(f"Total Samples: {detailed_results['total_samples']}")
-    print(f"Total Tokens: {detailed_results['total_tokens']}")
-    print(f"Valid Tokens: {detailed_results['valid_tokens']}")
+    print(f"Total Valid Tokens: {detailed_results['total_valid_tokens']}")
+    print(f"Total Correct Tokens: {detailed_results['total_correct_tokens']}")
     print(f"Results saved to: {results_file}")
     
     # Print sample-by-sample accuracy distribution
-    if detailed_results['samples']:
-        sample_accuracies = [s['accuracy'] for s in detailed_results['samples']]
+    if sample_results:
+        sample_accuracies = [s['accuracy'] for s in sample_results]
         print(f"\nSample Accuracy Distribution:")
         print(f"  Mean: {np.mean(sample_accuracies):.4f}")
         print(f"  Std:  {np.std(sample_accuracies):.4f}")
@@ -258,14 +279,18 @@ def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir, tra
         
         # Show some examples
         print(f"\nFirst 3 Sample Results:")
-        for i, sample in enumerate(detailed_results['samples'][:50]):
+        for i, sample in enumerate(sample_results[:3]):
             print(f"  Sample {i+1} (ID: {sample['sample_id']}):")
             print(f"    Accuracy: {sample['accuracy']:.4f}")
+            print(f"    Valid tokens: {sample['valid_tokens']}")
             print(f"    Predicted: {sample['predicted_text'][:100]}...")
             print(f"    Target:    {sample['target_text'][:100]}...")
             print()
     
     print(f"{'='*60}")
+    
+    # Clear GPU cache after inference
+    torch.cuda.empty_cache()
     
     return detailed_results
 
