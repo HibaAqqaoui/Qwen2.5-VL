@@ -124,7 +124,7 @@ def compute_metrics(eval_pred):
     
     return {"accuracy": accuracy}
 
-def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir):
+def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir, training_args):
     """Run inference on evaluation dataset and save detailed results."""
     
     print("Starting post-training inference on evaluation dataset...")
@@ -138,12 +138,17 @@ def run_inference_on_eval_dataset(model, tokenizer, data_module, output_dir):
         print("No evaluation dataset found. Skipping inference.")
         return
     
-    # Create a temporary trainer for inference
+    # Get the data collator from the data_module
+    data_collator = data_module.get('data_collator')
+    
+    # Create a temporary trainer for inference with proper configuration
     temp_trainer = Trainer(
         model=model,
         processing_class=tokenizer,
         eval_dataset=eval_dataset,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
+        args=training_args,  # Use the same training arguments for consistency
     )
     
     # Run evaluation/inference
@@ -381,7 +386,8 @@ def train(attn_implementation="flash_attention_2"):
             model=model, 
             tokenizer=tokenizer, 
             data_module=data_module,
-            output_dir=training_args.output_dir
+            output_dir=training_args.output_dir,
+            training_args=training_args
         )
         
         print("Post-training inference completed!")
